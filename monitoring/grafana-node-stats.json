@@ -1,0 +1,316 @@
+{
+  "dashboard": {
+    "title": "Stellar Node Stats (Per-Node)",
+    "tags": ["stellar", "node", "per-node"],
+    "timezone": "browser",
+    "templating": {
+      "list": [
+        {
+          "name": "node_name",
+          "type": "query",
+          "datasource": "Prometheus",
+          "query": "label_values(stellar_core_node_up, node_name)",
+          "includeAll": false,
+          "multi": true,
+          "allValue": ".*"
+        }
+      ]
+    },
+    "panels": [
+      {
+        "id": 1,
+        "title": "Node Status",
+        "type": "stat",
+        "gridPos": {"h": 8, "w": 6, "x": 0, "y": 0},
+        "targets": [
+          {
+            "expr": "stellar_core_node_up{node_name=~\"$node_name\"}",
+            "legendFormat": "{{ node_name }}",
+            "refId": "A"
+          }
+        ],
+        "options": {
+          "colorMode": "background",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "red", "value": null},
+              {"color": "green", "value": 1}
+            ]
+          }
+        }
+      },
+      {
+        "id": 2,
+        "title": "Ledger Sequence",
+        "type": "stat",
+        "gridPos": {"h": 8, "w": 6, "x": 6, "y": 0},
+        "targets": [
+          {
+            "expr": "stellar_core_ledger_sequence{node_name=~\"$node_name\"}",
+            "legendFormat": "{{ node_name }}",
+            "refId": "A"
+          }
+        ],
+        "options": {
+          "graphMode": "none"
+        }
+      },
+      {
+        "id": 3,
+        "title": "Sync Status",
+        "type": "stat",
+        "gridPos": {"h": 8, "w": 6, "x": 12, "y": 0},
+        "targets": [
+          {
+            "expr": "stellar_core_sync_status{node_name=~\"$node_name\"}",
+            "legendFormat": "{{ node_name }}",
+            "refId": "A"
+          }
+        ],
+        "options": {
+          "colorMode": "background",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "yellow", "value": null},
+              {"color": "green", "value": 1}
+            ]
+          }
+        }
+      },
+      {
+        "id": 4,
+        "title": "Peer Count",
+        "type": "stat",
+        "gridPos": {"h": 8, "w": 6, "x": 18, "y": 0},
+        "targets": [
+          {
+            "expr": "stellar_core_network_peers{node_name=~\"$node_name\"}",
+            "legendFormat": "{{ node_name }}",
+            "refId": "A"
+          }
+        ],
+        "options": {
+          "graphMode": "none"
+        }
+      },
+      {
+        "id": 5,
+        "title": "Transactions Per Second",
+        "type": "timeseries",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+        "targets": [
+          {
+            "expr": "rate(stellar_core_transactions_total{node_name=~\"$node_name\",status=\"applied\"}[5m])",
+            "legendFormat": "{{ node_name }} - Applied",
+            "refId": "A"
+          }
+        ],
+        "options": {
+          "legend": {
+            "showLegend": true,
+            "placement": "bottom"
+          }
+        }
+      },
+      {
+        "id": 6,
+        "title": "Transaction Processing Latency",
+        "type": "timeseries",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, rate(stellar_core_transactions_duration_seconds_bucket{node_name=~\"$node_name\"}[5m]))",
+            "legendFormat": "{{ node_name }} - P95",
+            "refId": "A"
+          },
+          {
+            "expr": "histogram_quantile(0.50, rate(stellar_core_transactions_duration_seconds_bucket{node_name=~\"$node_name\"}[5m]))",
+            "legendFormat": "{{ node_name }} - P50",
+            "refId": "B"
+          }
+        ],
+        "options": {
+          "legend": {
+            "showLegend": true,
+            "placement": "bottom"
+          }
+        }
+      },
+      {
+        "id": 7,
+        "title": "Ledger Lag",
+        "type": "timeseries",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+        "targets": [
+          {
+            "expr": "stellar_core_ledger_lag_seconds{node_name=~\"$node_name\"}",
+            "legendFormat": "{{ node_name }}",
+            "refId": "A"
+          }
+        ],
+        "options": {
+          "legend": {
+            "showLegend": true,
+            "placement": "bottom"
+          }
+        },
+        "fieldConfig": {
+          "defaults": {
+            "custom": {
+              "axisLabel": "Seconds"
+            }
+          }
+        }
+      },
+      {
+        "id": 8,
+        "title": "Ledger Close Time",
+        "type": "timeseries",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, rate(stellar_core_ledger_close_time_seconds_bucket{node_name=~\"$node_name\"}[5m]))",
+            "legendFormat": "{{ node_name }} - P95",
+            "refId": "A"
+          }
+        ],
+        "options": {
+          "legend": {
+            "showLegend": true,
+            "placement": "bottom"
+          }
+        }
+      },
+      {
+        "id": 9,
+        "title": "Peer Lag",
+        "type": "stat",
+        "gridPos": {"h": 8, "w": 6, "x": 0, "y": 24},
+        "targets": [
+          {
+            "expr": "stellar_core_network_peer_lag_seconds{node_name=~\"$node_name\"}",
+            "legendFormat": "{{ node_name }}",
+            "refId": "A"
+          }
+        ],
+        "options": {
+          "graphMode": "none",
+          "unit": "s"
+        }
+      },
+      {
+        "id": 10,
+        "title": "Quorum Connected",
+        "type": "stat",
+        "gridPos": {"h": 8, "w": 6, "x": 6, "y": 24},
+        "targets": [
+          {
+            "expr": "stellar_core_quorum_connected{node_name=~\"$node_name\"}",
+            "legendFormat": "{{ node_name }}",
+            "refId": "A"
+          }
+        ],
+        "options": {
+          "colorMode": "background",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "red", "value": null},
+              {"color": "green", "value": 1}
+            ]
+          }
+        }
+      },
+      {
+        "id": 11,
+        "title": "Pod CPU Usage",
+        "type": "timeseries",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 32},
+        "targets": [
+          {
+            "expr": "stellar_node_pod_cpu_usage_cores{node_name=~\"$node_name\"}",
+            "legendFormat": "{{ node_name }}",
+            "refId": "A"
+          }
+        ],
+        "options": {
+          "legend": {
+            "showLegend": true,
+            "placement": "bottom"
+          }
+        }
+      },
+      {
+        "id": 12,
+        "title": "Pod Memory Usage",
+        "type": "timeseries",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 32},
+        "targets": [
+          {
+            "expr": "stellar_node_pod_memory_bytes{node_name=~\"$node_name\"} / 1024 / 1024 / 1024",
+            "legendFormat": "{{ node_name }}",
+            "refId": "A"
+          }
+        ],
+        "options": {
+          "legend": {
+            "showLegend": true,
+            "placement": "bottom"
+          }
+        },
+        "fieldConfig": {
+          "defaults": {
+            "custom": {
+              "axisLabel": "GB"
+            }
+          }
+        }
+      },
+      {
+        "id": 13,
+        "title": "PVC Storage Usage",
+        "type": "timeseries",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 40},
+        "targets": [
+          {
+            "expr": "(stellar_node_pvc_used_bytes{node_name=~\"$node_name\"} / stellar_node_pvc_capacity_bytes{node_name=~\"$node_name\"}) * 100",
+            "legendFormat": "{{ node_name }} - {{ pvc_name }}",
+            "refId": "A"
+          }
+        ],
+        "options": {
+          "legend": {
+            "showLegend": true,
+            "placement": "bottom"
+          }
+        },
+        "fieldConfig": {
+          "defaults": {
+            "custom": {
+              "axisLabel": "Percent"
+            }
+          }
+        }
+      },
+      {
+        "id": 14,
+        "title": "Archive Lag",
+        "type": "stat",
+        "gridPos": {"h": 8, "w": 6, "x": 0, "y": 48},
+        "targets": [
+          {
+            "expr": "stellar_core_archive_lag_sequences{node_name=~\"$node_name\"}",
+            "legendFormat": "{{ node_name }}",
+            "refId": "A"
+          }
+        ],
+        "options": {
+          "graphMode": "none",
+          "unit": "short"
+        }
+      }
+    ]
+  }
+}

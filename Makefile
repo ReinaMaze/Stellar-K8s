@@ -22,12 +22,12 @@
 	fmt fmt-check lint lint-strict shellcheck audit security-scan security-all security-fix security-report \
 	build test ci-local quick watch \
 	docker-build docker-build-ci docker-multiarch \
-	dev-setup dev-setup-rust dev-setup-tools dev-setup-hooks pre-commit pre-commit-install run run-local run-dev \
+	dev-setup dev-setup-check dev-setup-strict dev-setup-rust dev-setup-tools dev-setup-hooks pre-commit pre-commit-install run run-local run-dev \
 	install-crd apply-samples crd-gen regenerate completions completions-bash completions-zsh completions-fish \
 	helm-lint link-check link-check-all changelog \
 	generate-api-docs check-api-docs generate-openapi-spec check-openapi-spec check-stale-docs update-doc-baseline docs-check-strict docs-lint \
 	third-party-licenses check-third-party-licenses sort-manifests \
-	benchmark benchmark-upgrade benchmark-webhook benchmark-webhook-health \
+	benchmark benchmark-suite benchmark-upgrade benchmark-webhook benchmark-webhook-health \
 	benchmark-webhook-compare benchmark-webhook-save benchmark-all \
 	compose-up compose-dev compose-down compose-logs \
 	bundle bundle-render bundle-generate bundle-validate bundle-build \
@@ -38,6 +38,8 @@
 	collect-failure-diagnostics test-failure-diagnostics \
 	check-unreachable-modules \
 	check-pipeline-log-redaction \
+	monitoring-setup prometheus-deploy grafana-deploy metrics-check \
+	chaos-setup chaos-run chaos-report \
 	cleanup clean
 
 .DEFAULT_GOAL := help
@@ -435,7 +437,14 @@ helm-lint: ## Helm lint check
 
 # ── Development Setup ─────────────────────────────────────────────────────────
 
-dev-setup: dev-setup-rust dev-setup-tools dev-setup-hooks ## Setup dev environment
+dev-setup: ## Setup dev environment with environment health checks (issue #wave-dx)
+	@bash scripts/dev-setup-enhanced.sh
+
+dev-setup-check: ## Check environment health without installation
+	@bash scripts/dev-setup-enhanced.sh --check-only
+
+dev-setup-strict: ## Check environment health and fail if components are outdated
+	@bash scripts/dev-setup-enhanced.sh --check-only --strict
 
 dev-setup-rust: ## Install Rust toolchain and components
 	@echo "→ Setting up Rust toolchain..."
@@ -465,6 +474,10 @@ benchmark: ## Run k6 performance benchmarks
 	@command -v k6 >/dev/null 2>&1 || (echo "✗ k6 not installed. Install: https://k6.io/docs/get-started/installation/" && exit 1)
 	cd benchmarks && k6 run k6/operator-load-test.js
 
+benchmark-suite: ## Run full benchmark suite (CRD, Helm, API, webhook) and save results
+	@echo "→ Running full benchmark suite..."
+	@bash benchmarks/benchmark-suite.sh all
+
 benchmark-webhook: ## Run webhook performance benchmarks
 	@echo "→ Running webhook benchmarks..."
 	@command -v k6 >/dev/null 2>&1 || (echo "✗ k6 not installed. Install: https://k6.io/docs/get-started/installation/" && exit 1)
@@ -485,6 +498,83 @@ benchmark-upgrade: ## Run upgrade load test with k6
 	@echo "→ Running upgrade load test..."
 	@command -v k6 >/dev/null 2>&1 || (echo "✗ k6 not installed. Install: https://k6.io/docs/get-started/installation/" && exit 1)
 	cd benchmarks && k6 run k6/upgrade-load-test.js
+
+# ── Monitoring & Observability ────────────────────────────────────────────────
+
+monitoring-setup: ## Install Prometheus and Grafana (requires kube-prometheus-stack)
+	@echo "→ Setting up monitoring stack..."
+	@command -v helm >/dev/null 2>&1 || (echo "✗ helm not found" && exit 1)
+	@echo "  Adding Prometheus Helm repo..."
+	@helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+	@helm repo update
+	@echo "  Installing Prometheus Operator..."
+	@helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
+		--namespace monitoring --create-namespace \
+		--values monitoring/prometheus-values.yaml
+	@echo "✓ Monitoring stack installed. Access:"
+	@echo "  Prometheus: kubectl port-forward -n monitoring svc/kube-prometheus-prometheus 9090:9090"
+	@echo "  Grafana:    kubectl port-forward -n monitoring svc/kube-prometheus-grafana 3000:80"
+
+prometheus-deploy: ## Deploy Prometheus metrics collection
+	@echo "→ Deploying Prometheus metrics configuration..."
+	@kubectl apply -f monitoring/prometheus-metrics.yaml
+	@echo "✓ Prometheus metrics deployed"
+
+grafana-deploy: ## Deploy Grafana dashboards
+	@echo "→ Deploying Grafana dashboards..."
+	@echo "  Cluster Overview dashboard..."
+	@kubectl create configmap grafana-dashboard-cluster \
+		--from-file=monitoring/grafana-cluster-overview.json \
+		-n monitoring --dry-run=client -o yaml | kubectl apply -f -
+	@echo "  Per-Node Stats dashboard..."
+	@kubectl create configmap grafana-dashboard-node \
+		--from-file=monitoring/grafana-node-stats.json \
+		-n monitoring --dry-run=client -o yaml | kubectl apply -f -
+	@echo "✓ Grafana dashboards deployed"
+
+metrics-check: ## Verify metrics are being scraped
+	@echo "→ Checking Prometheus metrics..."
+	@kubectl port-forward -n monitoring svc/kube-prometheus-prometheus 9090:9090 &
+	@sleep 2
+	@curl -s 'http://localhost:9090/api/v1/query?query=stellar_operator_uptime_seconds_total' | jq '.data.result'
+	@kill %1 2>/dev/null || true
+
+# ── Chaos Engineering ─────────────────────────────────────────────────────────
+
+chaos-setup: ## Install Chaos Mesh and prepare chaos test environment
+	@echo "→ Setting up Chaos Mesh..."
+	@command -v helm >/dev/null 2>&1 || (echo "✗ helm not found" && exit 1)
+	@echo "  Adding Chaos Mesh Helm repo..."
+	@helm repo add chaos-mesh https://charts.chaos-mesh.org
+	@helm repo update
+	@echo "  Installing Chaos Mesh..."
+	@helm upgrade --install chaos-mesh chaos-mesh/chaos-mesh \
+		--namespace chaos-testing --create-namespace \
+		--set chaosDaemon.privileged=true
+	@echo "  Creating chaos-testing namespace..."
+	@kubectl create namespace chaos-testing --dry-run=client -o yaml | kubectl apply -f -
+	@echo "✓ Chaos Mesh installed. Apply experiments with:"
+	@echo "  kubectl apply -f benchmarks/chaos-engineering-scenarios.yaml"
+
+chaos-run: ## Run chaos engineering test suite
+	@echo "→ Running chaos engineering tests..."
+	@kubectl apply -f benchmarks/chaos-engineering-scenarios.yaml
+	@echo "  Waiting for chaos experiments to complete (this may take 30+ minutes)..."
+	@kubectl wait --for=condition=Complete job/stellar-crash-recovery-test -n chaos-testing --timeout=600s || true
+	@echo "✓ Chaos experiments completed"
+
+chaos-report: ## Generate chaos test report
+	@echo "→ Generating chaos test report..."
+	@echo "Chaos Test Results:" > /tmp/chaos-report.txt
+	@echo "==================" >> /tmp/chaos-report.txt
+	@echo "" >> /tmp/chaos-report.txt
+	@kubectl get chaosexperiment -n chaos-testing -o wide >> /tmp/chaos-report.txt 2>/dev/null || echo "No experiments found" >> /tmp/chaos-report.txt
+	@echo "" >> /tmp/chaos-report.txt
+	@echo "Test Logs:" >> /tmp/chaos-report.txt
+	@kubectl logs -l app=stellar-core -n stellar-system --tail=100 >> /tmp/chaos-report.txt 2>/dev/null || true
+	@cat /tmp/chaos-report.txt
+	@echo ""
+	@echo "Report saved to: /tmp/chaos-report.txt"
 
 # ── Running the Operator ──────────────────────────────────────────────────────
 

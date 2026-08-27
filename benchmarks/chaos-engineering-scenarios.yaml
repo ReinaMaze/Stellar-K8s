@@ -1,0 +1,437 @@
+# =============================================================================
+# Chaos Engineering Test Scenarios
+#
+# This file defines chaos experiments for testing Stellar-K8s operator
+# resilience. Scenarios cover:
+# - Network partitions between nodes
+# - Pod failures and recovery
+# - Resource exhaustion (CPU, memory, disk)
+# - Stellar Core crash recovery
+# - Ledger reconnection after network split
+#
+# These scenarios are executed via Chaos Mesh experiments in CI/CD
+# pipeline (see .github/workflows/chaos-tests.yml).
+#
+# Acceptance Criteria:
+# - Network partitions resolved within 2 minutes
+# - Pod recovery within 1 minute
+# - Ledger reconnection within 30 seconds of network recovery
+# - No data loss after resource exhaustion
+#
+# Issue: #wave-dx (Developer Experience Wave)
+# =============================================================================
+
+---
+# Scenario 1: Operator Pod Kill (Chaos Group A)
+# Tests operator pod crash recovery and leadership failover in HA deployments
+
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: stellar-operator-kill
+  namespace: chaos-testing
+spec:
+  action: pod-kill
+  mode: one
+  selector:
+    namespaces:
+      - stellar-system
+    labelSelectors:
+      app: stellar-operator
+  scheduler:
+    cron: "@hourly"
+  duration: 0s  # One-time kill
+  gracePeriod: 5
+  expected:
+    - reconciliation_resumption_time: 60s
+    - pod_restart_detection: 30s
+    - leadership_election_time: 120s
+
+---
+# Scenario 2: Network Partition - Operator <-> Core (Chaos Group A)
+# Tests behavior when operator can't reach Stellar Core pods
+
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: stellar-network-partition-operator-core
+  namespace: chaos-testing
+spec:
+  action: partition
+  mode: all
+  duration: 2m
+  selector:
+    namespaces:
+      - stellar-system
+    labelSelectors:
+      app: stellar-operator
+  target:
+    selector:
+      namespaces:
+        - stellar-system
+      labelSelectors:
+        app: stellar-core
+    mode: all
+  expected:
+    - partition_detection_time: 30s
+    - recovery_after_partition_healing: 120s
+    - operator_reconciliation_error_rate: "< 5%"
+
+---
+# Scenario 3: API Latency Injection (Chaos Group B)
+# Tests operator behavior under high-latency API calls
+
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: stellar-api-latency
+  namespace: chaos-testing
+spec:
+  action: delay
+  mode: all
+  duration: 5m
+  selector:
+    namespaces:
+      - stellar-system
+    labelSelectors:
+      app: stellar-operator
+  delay:
+    latency: "500ms"
+    jitter: "100ms"
+  expected:
+    - api_p99_latency: "< 2000ms"
+    - reconciliation_timeout_rate: "< 1%"
+    - error_recovery_time: "< 120s"
+
+---
+# Scenario 4: Validator Peer Network Partition (Chaos Group B)
+# Tests Stellar Core quorum behavior during peer disconnection
+
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: stellar-peer-partition
+  namespace: chaos-testing
+spec:
+  action: partition
+  mode: all
+  duration: 3m
+  selector:
+    namespaces:
+      - stellar-system
+    labelSelectors:
+      app: stellar-core
+      role: validator-1
+  target:
+    selector:
+      namespaces:
+        - stellar-system
+      labelSelectors:
+        app: stellar-core
+    mode: all
+  expected:
+    - quorum_connectivity_restored: 180s
+    - ledger_lag_increase: "< 50 ledgers"
+    - byzantine_node_false_positives: "== 0"
+
+---
+# Scenario 5: Disk Space Exhaustion (Chaos Group B)
+# Tests node behavior when PVC fills up
+
+apiVersion: chaos-mesh.org/v1alpha1
+kind: IOChaos
+metadata:
+  name: stellar-disk-fill
+  namespace: chaos-testing
+spec:
+  action: fill
+  mode: one
+  duration: 5m
+  selector:
+    namespaces:
+      - stellar-system
+    labelSelectors:
+      app: stellar-core
+  volume-path: "/var/lib/stellar"
+  size: "95%"
+  fill-size: 10485760  # 10MB at a time
+  expected:
+    - pod_eviction_time: "< 300s"
+    - storage_alert_trigger: "< 60s"
+    - pod_recovery_time: "< 180s"
+
+---
+# Scenario 6: CPU Stress Test (Chaos Group C)
+# Tests operator and core under sustained CPU load
+
+apiVersion: chaos-mesh.org/v1alpha1
+kind: StressChaos
+metadata:
+  name: stellar-cpu-stress
+  namespace: chaos-testing
+spec:
+  action: stress
+  mode: all
+  duration: 10m
+  selector:
+    namespaces:
+      - stellar-system
+    labelSelectors:
+      app: stellar-core
+  stressors:
+    cpu:
+      workers: 4
+  expected:
+    - reconciliation_latency_increase: "< 2x"
+    - transaction_throughput_maintained: "> 50%"
+    - pod_oom_kill_rate: "0"
+
+---
+# Scenario 7: Memory Pressure (Chaos Group C)
+# Tests behavior under memory constraints
+
+apiVersion: chaos-mesh.org/v1alpha1
+kind: StressChaos
+metadata:
+  name: stellar-memory-pressure
+  namespace: chaos-testing
+spec:
+  action: stress
+  mode: all
+  duration: 10m
+  selector:
+    namespaces:
+      - stellar-system
+    labelSelectors:
+      app: stellar-core
+  stressors:
+    memory:
+      workers: 2
+  memstress:
+    size: "512MB"
+  expected:
+    - pod_oom_kill_rate: "< 1%"
+    - memory_reclaim_time: "< 60s"
+    - ledger_processing_degradation: "< 30%"
+
+---
+# Scenario 8: Validator Pod Kill (Chaos Group C)
+# Tests Stellar Core recovery when validator pod crashes
+
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: stellar-validator-kill
+  namespace: chaos-testing
+spec:
+  action: pod-kill
+  mode: one
+  selector:
+    namespaces:
+      - stellar-system
+    labelSelectors:
+      app: stellar-core
+      role: validator
+  duration: 0s
+  gracePeriod: 5
+  expected:
+    - pod_restart_time: "< 120s"
+    - ledger_reconnection_time: "< 30s"
+    - quorum_reconnection_time: "< 60s"
+    - transaction_loss: "== 0"
+
+---
+# Scenario 9: Cascading Failure (Chaos Group C)
+# Tests resilience when multiple pods fail in quick succession
+
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: stellar-cascading-failure
+  namespace: chaos-testing
+spec:
+  action: pod-kill
+  mode: "fixed"  # Kill specific number
+  value: "2"     # Kill 2 pods
+  selector:
+    namespaces:
+      - stellar-system
+    labelSelectors:
+      app: stellar-core
+  duration: 0s
+  gracePeriod: 0  # No grace, immediate kill
+  scheduler:
+    cron: "@every 30s"  # Kill every 30s, 3 times
+  expected:
+    - cluster_recovery_time: "< 300s"
+    - transaction_loss: "== 0"
+    - quorum_maintained: "true"
+    - byzantine_node_count: "== 0"
+
+---
+# Scenario 10: Disk I/O Stress (Chaos Group C)
+# Tests persistence layer under I/O contention
+
+apiVersion: chaos-mesh.org/v1alpha1
+kind: IOChaos
+metadata:
+  name: stellar-disk-io-stress
+  namespace: chaos-testing
+spec:
+  action: latency
+  mode: all
+  duration: 10m
+  selector:
+    namespaces:
+      - stellar-system
+    labelSelectors:
+      app: stellar-core
+  volume-path: "/var/lib/stellar"
+  latency: "100ms"
+  percent: 50
+  expected:
+    - reconciliation_timeout_rate: "< 5%"
+    - ledger_lag_increase: "< 100 ledgers"
+    - pod_oom_kill_rate: "0"
+
+---
+# Scenario 11: Leader Election Under Network Chaos (HA Test)
+# Tests leadership election when network is degraded
+
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: stellar-leader-election
+  namespace: chaos-testing
+spec:
+  action: delay
+  mode: all
+  duration: 5m
+  selector:
+    namespaces:
+      - stellar-system
+    labelSelectors:
+      app: stellar-operator
+  delay:
+    latency: "1s"
+    jitter: "500ms"
+  loss:
+    loss: "5%"
+  expected:
+    - leader_election_time: "< 120s"
+    - follower_takeover_time: "< 60s"
+    - reconciliation_continuity: "true"
+
+---
+# Scenario 12: Stellar Core Crash Recovery (Extended)
+# Tests full recovery sequence after Stellar Core crash
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: stellar-crash-recovery-test
+  namespace: chaos-testing
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      serviceAccountName: chaos-tester
+      containers:
+        - name: test
+          image: stellar-chaos-tools:latest
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -e
+              
+              echo "Starting Stellar Core crash recovery test..."
+              
+              # 1. Get initial state
+              INITIAL_LEDGER=$(kubectl get stellarnode -o jsonpath='{.items[0].status.ledgerSequence}')
+              echo "Initial ledger: $INITIAL_LEDGER"
+              
+              # 2. Kill the pod
+              kubectl delete pod -l app=stellar-core --all
+              echo "Killed Stellar Core pod"
+              
+              # 3. Monitor recovery
+              for i in {1..60}; do
+                POD_STATUS=$(kubectl get pod -l app=stellar-core -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo "NotFound")
+                echo "[$i/60] Pod status: $POD_STATUS"
+                
+                if [ "$POD_STATUS" = "Running" ]; then
+                  echo "Pod recovered after $((i * 5)) seconds"
+                  break
+                fi
+                
+                sleep 5
+              done
+              
+              # 4. Wait for ledger reconnection
+              for i in {1..30}; do
+                CURRENT_LEDGER=$(kubectl get stellarnode -o jsonpath='{.items[0].status.ledgerSequence}' 2>/dev/null || echo "0")
+                SYNCED=$(kubectl get stellarnode -o jsonpath='{.items[0].status.synced}' 2>/dev/null || echo "false")
+                echo "[$i/30] Ledger: $CURRENT_LEDGER, Synced: $SYNCED"
+                
+                if [ "$SYNCED" = "true" ]; then
+                  echo "Ledger reconnected after $((i * 5)) seconds"
+                  if [ "$CURRENT_LEDGER" -gt "$INITIAL_LEDGER" ]; then
+                    echo "✓ Recovery successful - ledger advanced"
+                    exit 0
+                  else
+                    echo "✗ Ledger did not advance"
+                    exit 1
+                  fi
+                fi
+                
+                sleep 5
+              done
+              
+              echo "✗ Recovery timeout"
+              exit 1
+      restartPolicy: Never
+
+---
+# ServiceAccount for Chaos Testing
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: chaos-tester
+  namespace: chaos-testing
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: chaos-tester
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "delete"]
+  - apiGroups: ["stellar.org"]
+    resources: ["stellarnodes"]
+    verbs: ["get", "list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: chaos-tester
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: chaos-tester
+subjects:
+  - kind: ServiceAccount
+    name: chaos-tester
+    namespace: chaos-testing
+
+---
+# Chaos Mesh Namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: chaos-testing
+  labels:
+    name: chaos-testing

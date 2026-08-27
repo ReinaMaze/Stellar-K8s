@@ -1,0 +1,513 @@
+# =============================================================================
+# Prometheus Metrics Configuration for Stellar-K8s Operator
+#
+# This document defines the metrics exposed by Stellar Core and the operator,
+# focusing on TPS, ledger lag, and node health.
+#
+# Metrics are scraped via ServiceMonitor CRD (Prometheus Operator) or
+# configured directly in Prometheus scrape configs.
+#
+# Naming Convention:
+#   stellar_<component>_<metric>_<unit>
+#   - component: operator, core, node, validator, horizon, soroban
+#   - metric: descriptive name
+#   - unit: seconds, bytes, count, requests, tps, etc.
+#
+# Issue: #wave-dx (Developer Experience Wave)
+# =============================================================================
+
+---
+# Operator Metrics (Kubernetes operator process)
+---
+
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: stellar-operator-metrics
+  namespace: stellar-system
+spec:
+  groups:
+    - name: stellar.operator
+      interval: 30s
+      metrics:
+        # Operator Process Metrics
+        - name: stellar_operator_info
+          help: "Operator version and build information"
+          type: gauge
+          labels:
+            - version
+            - git_sha
+            - rust_version
+            - build_date
+
+        - name: stellar_operator_uptime_seconds_total
+          help: "Operator uptime in seconds since startup"
+          type: counter
+
+        - name: stellar_operator_leader_status
+          help: "Leadership status: 1 = leader, 0 = follower (HA setups)"
+          type: gauge
+
+        # Reconciliation Metrics
+        - name: stellar_operator_reconciliation_duration_seconds
+          help: "Time taken to reconcile a StellarNode resource"
+          type: histogram
+          buckets:
+            - 0.1
+            - 0.5
+            - 1.0
+            - 2.0
+            - 5.0
+            - 10.0
+
+        - name: stellar_operator_reconciliation_total
+          help: "Total number of reconciliation attempts"
+          type: counter
+          labels:
+            - result  # success, error, requeue
+
+        - name: stellar_operator_reconciliation_errors_total
+          help: "Total reconciliation errors"
+          type: counter
+          labels:
+            - error_type
+
+        # HTTP API Metrics
+        - name: stellar_operator_http_requests_total
+          help: "Total HTTP requests to the operator API"
+          type: counter
+          labels:
+            - method
+            - path
+            - status
+
+        - name: stellar_operator_http_request_duration_seconds
+          help: "HTTP request latency"
+          type: histogram
+          buckets:
+            - 0.01
+            - 0.05
+            - 0.1
+            - 0.5
+            - 1.0
+            - 2.0
+
+        # Resource Usage Metrics
+        - name: stellar_operator_memory_bytes
+          help: "Operator memory usage in bytes"
+          type: gauge
+
+        - name: stellar_operator_cpu_seconds_total
+          help: "Operator CPU time in seconds"
+          type: counter
+
+        - name: stellar_operator_disk_io_bytes_total
+          help: "Operator disk I/O operations"
+          type: counter
+
+        # Queue Metrics
+        - name: stellar_operator_workqueue_depth
+          help: "Depth of the reconciliation work queue"
+          type: gauge
+
+        - name: stellar_operator_workqueue_adds_total
+          help: "Total items added to the work queue"
+          type: counter
+
+        - name: stellar_operator_workqueue_retries_total
+          help: "Total retried items in the work queue"
+          type: counter
+
+---
+# Stellar Core Metrics (Node-level metrics)
+---
+
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: stellar-core-metrics
+  namespace: stellar-system
+spec:
+  groups:
+    - name: stellar.core
+      interval: 15s
+      metrics:
+        # Transaction Processing
+        - name: stellar_core_ledger_tps
+          help: "Transactions per second (TPS) processed by this Stellar Core instance"
+          type: gauge
+          labels:
+            - node_name
+            - network
+
+        - name: stellar_core_ledger_sequence
+          help: "Current ledger sequence number"
+          type: gauge
+          labels:
+            - node_name
+
+        - name: stellar_core_transactions_total
+          help: "Total transactions processed since startup"
+          type: counter
+          labels:
+            - node_name
+            - status  # applied, failed, queued
+
+        - name: stellar_core_transactions_duration_seconds
+          help: "Time to process a transaction"
+          type: histogram
+          buckets:
+            - 0.001
+            - 0.005
+            - 0.01
+            - 0.05
+            - 0.1
+            - 0.5
+          labels:
+            - node_name
+
+        # Ledger Lag Metrics
+        - name: stellar_core_ledger_lag_seconds
+          help: "Delay between ledger close and processing in seconds"
+          type: gauge
+          labels:
+            - node_name
+
+        - name: stellar_core_ledger_close_time_seconds
+          help: "Time to close a ledger"
+          type: histogram
+          buckets:
+            - 1.0
+            - 2.0
+            - 3.0
+            - 4.0
+            - 5.0
+            - 10.0
+          labels:
+            - node_name
+
+        - name: stellar_core_ledger_age_seconds
+          help: "Age of the last closed ledger"
+          type: gauge
+          labels:
+            - node_name
+
+        # Node Health Metrics
+        - name: stellar_core_node_up
+          help: "Node is up and responding to requests: 1 = up, 0 = down"
+          type: gauge
+          labels:
+            - node_name
+            - mode  # validator, observer
+
+        - name: stellar_core_sync_status
+          help: "Node synchronization status: 1 = synced, 0 = syncing"
+          type: gauge
+          labels:
+            - node_name
+
+        - name: stellar_core_network_peers
+          help: "Number of connected peers"
+          type: gauge
+          labels:
+            - node_name
+
+        - name: stellar_core_network_peer_lag_seconds
+          help: "Network latency to peers (p95)"
+          type: gauge
+          labels:
+            - node_name
+
+        - name: stellar_core_peer_connections_total
+          help: "Total peer connections established"
+          type: counter
+          labels:
+            - node_name
+            - direction  # inbound, outbound
+
+        # Quorum Metrics
+        - name: stellar_core_quorum_connected
+          help: "Is the node connected to quorum: 1 = yes, 0 = no"
+          type: gauge
+          labels:
+            - node_name
+
+        - name: stellar_core_quorum_unsafe
+          help: "Is the quorum in an unsafe state: 1 = yes, 0 = no"
+          type: gauge
+          labels:
+            - node_name
+
+        - name: stellar_core_quorum_distance
+          help: "Distance to quorum (lower is better)"
+          type: gauge
+          labels:
+            - node_name
+
+        # Byzantine Monitoring
+        - name: stellar_core_byzantine_nodes
+          help: "Number of detected Byzantine nodes"
+          type: gauge
+          labels:
+            - node_name
+
+        - name: stellar_core_byzantine_fault_tolerance
+          help: "Current Byzantine fault tolerance threshold"
+          type: gauge
+          labels:
+            - node_name
+
+        # Archive Metrics
+        - name: stellar_core_archive_lag_sequences
+          help: "Number of ledgers behind the archive"
+          type: gauge
+          labels:
+            - node_name
+            - archive_name
+
+        # RPC Endpoint Metrics (if enabled)
+        - name: stellar_core_rpc_requests_total
+          help: "Total RPC requests"
+          type: counter
+          labels:
+            - node_name
+            - method
+
+        - name: stellar_core_rpc_request_duration_seconds
+          help: "RPC request latency"
+          type: histogram
+          buckets:
+            - 0.01
+            - 0.05
+            - 0.1
+            - 0.5
+            - 1.0
+          labels:
+            - node_name
+            - method
+
+        # Soroban Smart Contract Metrics
+        - name: stellar_soroban_contracts_invoked_total
+          help: "Total Soroban contract invocations"
+          type: counter
+          labels:
+            - node_name
+            - contract_id
+
+        - name: stellar_soroban_wasm_execution_seconds
+          help: "WASM contract execution time"
+          type: histogram
+          buckets:
+            - 0.001
+            - 0.01
+            - 0.1
+            - 1.0
+          labels:
+            - node_name
+
+        - name: stellar_soroban_storage_operations_total
+          help: "Total Soroban storage operations"
+          type: counter
+          labels:
+            - node_name
+            - operation_type  # read, write, delete
+
+---
+# Kubernetes Resource Metrics
+---
+
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: stellar-k8s-metrics
+  namespace: stellar-system
+spec:
+  groups:
+    - name: stellar.kubernetes
+      interval: 30s
+      metrics:
+        # Pod Metrics
+        - name: stellar_node_pod_cpu_usage_cores
+          help: "CPU usage of StellarNode pod"
+          type: gauge
+          labels:
+            - node_name
+            - pod_name
+            - namespace
+
+        - name: stellar_node_pod_memory_bytes
+          help: "Memory usage of StellarNode pod"
+          type: gauge
+          labels:
+            - node_name
+            - pod_name
+            - namespace
+
+        - name: stellar_node_pod_restart_count
+          help: "Number of times the StellarNode pod has restarted"
+          type: counter
+          labels:
+            - node_name
+            - pod_name
+            - namespace
+
+        - name: stellar_node_pod_status
+          help: "Pod status: 1 = running, 0 = other"
+          type: gauge
+          labels:
+            - node_name
+            - pod_name
+            - namespace
+            - status
+
+        # PVC Metrics
+        - name: stellar_node_pvc_used_bytes
+          help: "PVC storage used by StellarNode"
+          type: gauge
+          labels:
+            - node_name
+            - pvc_name
+            - namespace
+
+        - name: stellar_node_pvc_capacity_bytes
+          help: "PVC storage capacity"
+          type: gauge
+          labels:
+            - node_name
+            - pvc_name
+            - namespace
+
+        - name: stellar_node_pvc_free_bytes
+          help: "PVC storage available"
+          type: gauge
+          labels:
+            - node_name
+            - pvc_name
+            - namespace
+
+        - name: stellar_node_pvc_iops
+          help: "PVC I/O operations per second"
+          type: gauge
+          labels:
+            - node_name
+            - pvc_name
+            - namespace
+
+        # Deployment Metrics
+        - name: stellar_operator_deployment_replicas
+          help: "Current number of operator replicas"
+          type: gauge
+
+        - name: stellar_operator_deployment_replicas_ready
+          help: "Number of ready operator replicas"
+          type: gauge
+
+        - name: stellar_operator_deployment_replicas_updated
+          help: "Number of updated operator replicas"
+          type: gauge
+
+---
+# Recording Rules for Common Queries
+---
+
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: stellar-recording-rules
+  namespace: stellar-system
+spec:
+  groups:
+    - name: stellar.recording
+      interval: 30s
+      rules:
+        # TPS over 5 minute window
+        - expr: |
+            avg(rate(stellar_core_transactions_total{status="applied"}[5m]))
+          record: stellar:tps:5m
+
+        # TPS over 1 hour window
+        - expr: |
+            avg(rate(stellar_core_transactions_total{status="applied"}[1h]))
+          record: stellar:tps:1h
+
+        # Average ledger lag across all nodes
+        - expr: |
+            avg(stellar_core_ledger_lag_seconds)
+          record: stellar:ledger_lag:avg
+
+        # P95 ledger lag across all nodes
+        - expr: |
+            histogram_quantile(0.95, rate(stellar_core_ledger_close_time_seconds_bucket[5m]))
+          record: stellar:ledger_lag:p95
+
+        # Node health score (percentage of healthy nodes)
+        - expr: |
+            (sum(stellar_core_node_up) / count(stellar_core_node_up)) * 100
+          record: stellar:node_health_percent
+
+        # Quorum connectivity check
+        - expr: |
+            (sum(stellar_core_quorum_connected) / count(stellar_core_quorum_connected)) * 100
+          record: stellar:quorum_connectivity_percent
+
+        # Network peer connectivity
+        - expr: |
+            avg(stellar_core_network_peers)
+          record: stellar:network_peers:avg
+
+        # Byzantine node detection rate
+        - expr: |
+            sum(stellar_core_byzantine_nodes) / count(stellar_core_byzantine_nodes)
+          record: stellar:byzantine_rate
+
+        # Archive lag (ledgers)
+        - expr: |
+            avg(stellar_core_archive_lag_sequences)
+          record: stellar:archive_lag:avg
+
+        # RPC endpoint health
+        - expr: |
+            rate(stellar_core_rpc_requests_total[5m])
+          record: stellar:rpc_requests:rate_5m
+
+        # Soroban contract performance
+        - expr: |
+            histogram_quantile(0.95, rate(stellar_soroban_wasm_execution_seconds_bucket[5m]))
+          record: stellar:soroban_execution_p95
+
+---
+# ServiceMonitor for Prometheus Operator
+---
+
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: stellar-operator
+  namespace: stellar-system
+  labels:
+    app: stellar-operator
+spec:
+  selector:
+    matchLabels:
+      app: stellar-operator
+  endpoints:
+    - port: metrics
+      interval: 30s
+      path: /metrics
+
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: stellar-core
+  namespace: stellar-system
+  labels:
+    app: stellar-core
+spec:
+  selector:
+    matchLabels:
+      app: stellar-core
+  endpoints:
+    - port: metrics
+      interval: 15s
+      path: /metrics

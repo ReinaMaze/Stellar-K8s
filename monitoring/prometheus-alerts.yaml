@@ -1,0 +1,503 @@
+# =============================================================================
+# Prometheus Alert Rules for Stellar-K8s Cluster
+#
+# These alerts detect critical issues in the Stellar network and operator.
+# They integrate with Alertmanager for routing to various notification channels.
+#
+# Severity levels:
+#   - critical: Immediate action required, service disruption likely
+#   - warning:  Action recommended soon, degraded performance
+#   - info:     Informational, no immediate action required
+#
+# Issue: #wave-dx (Developer Experience Wave)
+# =============================================================================
+
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: stellar-alerts
+  namespace: stellar-system
+  labels:
+    prometheus: kube-prometheus
+spec:
+  groups:
+    - name: stellar.alerts
+      interval: 30s
+      rules:
+        # ─────────────────────────────────────────────────────────────────────
+        # Critical Node Health Alerts
+        # ─────────────────────────────────────────────────────────────────────
+
+        - alert: StellarNodeDown
+          expr: stellar_core_node_up == 0
+          for: 2m
+          labels:
+            severity: critical
+            component: stellar-core
+          annotations:
+            summary: "Stellar node {{ $labels.node_name }} is down"
+            description: |
+              Stellar node {{ $labels.node_name }} has been unreachable for 2+ minutes.
+              Immediate investigation required.
+              
+              Current status: {{ $value }}
+              Node: {{ $labels.node_name }}
+
+        - alert: StellarNodeNotSynced
+          expr: stellar_core_sync_status == 0
+          for: 5m
+          labels:
+            severity: warning
+            component: stellar-core
+          annotations:
+            summary: "Stellar node {{ $labels.node_name }} is not synced"
+            description: |
+              Node {{ $labels.node_name }} has not synced with the network for 5+ minutes.
+              
+              Ledger sequence: {{ $value }}
+              Check network connectivity and peer connections.
+
+        - alert: HighLedgerLag
+          expr: stellar_core_ledger_lag_seconds > 10
+          for: 5m
+          labels:
+            severity: warning
+            component: stellar-core
+          annotations:
+            summary: "High ledger lag detected on {{ $labels.node_name }}"
+            description: |
+              Node {{ $labels.node_name }} has ledger lag of {{ $value }}s (threshold: 10s).
+              
+              This indicates the node is falling behind in processing transactions.
+              Check node performance and resource availability.
+
+        - alert: QuorumNotConnected
+          expr: stellar_core_quorum_connected == 0
+          for: 3m
+          labels:
+            severity: critical
+            component: stellar-core
+          annotations:
+            summary: "Node {{ $labels.node_name }} not connected to quorum"
+            description: |
+              Node {{ $labels.node_name }} has lost connection to the quorum.
+              The node may become Byzantine or unable to validate transactions.
+              
+              Immediate action required.
+
+        - alert: QuorumUnsafe
+          expr: stellar_core_quorum_unsafe == 1
+          for: 1m
+          labels:
+            severity: critical
+            component: stellar-core
+          annotations:
+            summary: "Quorum is in UNSAFE state on {{ $labels.node_name }}"
+            description: |
+              Node {{ $labels.node_name }} reports unsafe quorum state.
+              The network may be experiencing consensus issues.
+              
+              Critical: Investigate quorum configuration immediately.
+
+        - alert: ByzantineNodeDetected
+          expr: stellar_core_byzantine_nodes > 0
+          for: 1m
+          labels:
+            severity: critical
+            component: stellar-core
+          annotations:
+            summary: "Byzantine node(s) detected"
+            description: |
+              Node {{ $labels.node_name }} detected {{ $value }} Byzantine nodes.
+              
+              This indicates potential network attacks or consensus failures.
+              Immediate investigation required.
+
+        # ─────────────────────────────────────────────────────────────────────
+        # Network & Peer Alerts
+        # ─────────────────────────────────────────────────────────────────────
+
+        - alert: InsufficientPeerConnections
+          expr: stellar_core_network_peers < 5
+          for: 5m
+          labels:
+            severity: warning
+            component: stellar-core
+          annotations:
+            summary: "Node {{ $labels.node_name }} has insufficient peer connections"
+            description: |
+              Node {{ $labels.node_name }} has only {{ $value }} peer connections (threshold: 5).
+              
+              This reduces redundancy and increases susceptibility to network partitions.
+              Check network configuration and firewall rules.
+
+        - alert: HighPeerLatency
+          expr: stellar_core_network_peer_lag_seconds > 1.0
+          for: 5m
+          labels:
+            severity: warning
+            component: stellar-core
+          annotations:
+            summary: "High peer latency on {{ $labels.node_name }}"
+            description: |
+              Node {{ $labels.node_name }} has P95 peer latency of {{ $value }}s (threshold: 1.0s).
+              
+              This may indicate network congestion or issues with peer nodes.
+
+        # ─────────────────────────────────────────────────────────────────────
+        # Transaction Processing Alerts
+        # ─────────────────────────────────────────────────────────────────────
+
+        - alert: LowTransactionThroughput
+          expr: stellar:tps:5m < 1
+          for: 10m
+          labels:
+            severity: warning
+            component: stellar-core
+          annotations:
+            summary: "Low transaction throughput detected"
+            description: |
+              Cluster average TPS is {{ $value }} (threshold: 1 TPS) over 5m window.
+              
+              Check for processing issues or network congestion.
+
+        - alert: HighTransactionLatency
+          expr: histogram_quantile(0.95, rate(stellar_core_transactions_duration_seconds_bucket[5m])) > 1.0
+          for: 5m
+          labels:
+            severity: warning
+            component: stellar-core
+          annotations:
+            summary: "High transaction processing latency"
+            description: |
+              P95 transaction latency is {{ $value }}s (threshold: 1.0s).
+              
+              This indicates performance degradation in transaction processing.
+
+        - alert: HighTransactionFailureRate
+          expr: |
+            (sum(rate(stellar_core_transactions_total{status="failed"}[5m])) 
+             / sum(rate(stellar_core_transactions_total[5m]))) * 100 > 5
+          for: 5m
+          labels:
+            severity: warning
+            component: stellar-core
+          annotations:
+            summary: "High transaction failure rate detected"
+            description: |
+              Transaction failure rate is {{ $value }}% (threshold: 5%).
+              
+              Investigate transaction validation issues and ledger state.
+
+        # ─────────────────────────────────────────────────────────────────────
+        # Operator Health Alerts
+        # ─────────────────────────────────────────────────────────────────────
+
+        - alert: OperatorReconciliationErrors
+          expr: rate(stellar_operator_reconciliation_errors_total[5m]) > 0
+          for: 5m
+          labels:
+            severity: warning
+            component: stellar-operator
+          annotations:
+            summary: "Operator reconciliation errors detected"
+            description: |
+              Operator is experiencing reconciliation errors (rate: {{ $value }}/s).
+              
+              Error type: {{ $labels.error_type }}
+              Check operator logs for details.
+
+        - alert: OperatorHighQueueDepth
+          expr: stellar_operator_workqueue_depth > 100
+          for: 5m
+          labels:
+            severity: warning
+            component: stellar-operator
+          annotations:
+            summary: "High operator work queue depth"
+            description: |
+              Operator work queue depth is {{ $value }} (threshold: 100).
+              
+              The operator may be overwhelmed with reconciliation tasks.
+              Check for resource constraints or error loops.
+
+        - alert: OperatorHighLatency
+          expr: histogram_quantile(0.95, rate(stellar_operator_http_request_duration_seconds_bucket[5m])) > 2.0
+          for: 5m
+          labels:
+            severity: warning
+            component: stellar-operator
+          annotations:
+            summary: "High operator API latency"
+            description: |
+              Operator P95 HTTP request latency is {{ $value }}s (threshold: 2.0s).
+              
+              API endpoints are responding slowly. Check resource usage.
+
+        - alert: OperatorRestarting
+          expr: rate(stellar_operator_uptime_seconds_total[1m]) < 0
+          for: 2m
+          labels:
+            severity: warning
+            component: stellar-operator
+          annotations:
+            summary: "Operator pod is restarting"
+            description: |
+              Operator uptime is decreasing, indicating pod restarts.
+              
+              Check operator logs for crash reasons.
+
+        # ─────────────────────────────────────────────────────────────────────
+        # Resource Alerts
+        # ─────────────────────────────────────────────────────────────────────
+
+        - alert: StellarNodeHighCPU
+          expr: stellar_node_pod_cpu_usage_cores > 2.0
+          for: 5m
+          labels:
+            severity: warning
+            component: kubernetes
+          annotations:
+            summary: "High CPU usage on {{ $labels.node_name }}"
+            description: |
+              Pod {{ $labels.pod_name }} is using {{ $value }} cores (threshold: 2.0).
+              
+              Increase resource limits if required or investigate performance issues.
+
+        - alert: StellarNodeHighMemory
+          expr: (stellar_node_pod_memory_bytes / 1024 / 1024 / 1024) > 4.0
+          for: 5m
+          labels:
+            severity: warning
+            component: kubernetes
+          annotations:
+            summary: "High memory usage on {{ $labels.node_name }}"
+            description: |
+              Pod {{ $labels.pod_name }} is using {{ $value }}GB (threshold: 4.0GB).
+              
+              Monitor for memory leaks or increase memory limits.
+
+        - alert: PVCNearCapacity
+          expr: |
+            (stellar_node_pvc_used_bytes / stellar_node_pvc_capacity_bytes) * 100 > 80
+          for: 5m
+          labels:
+            severity: warning
+            component: kubernetes
+          annotations:
+            summary: "PVC {{ $labels.pvc_name }} near capacity on {{ $labels.node_name }}"
+            description: |
+              PVC {{ $labels.pvc_name }} is {{ $value }}% full (threshold: 80%).
+              
+              Plan for storage expansion soon to avoid pod eviction.
+
+        - alert: PVCCriticalCapacity
+          expr: |
+            (stellar_node_pvc_used_bytes / stellar_node_pvc_capacity_bytes) * 100 > 95
+          for: 1m
+          labels:
+            severity: critical
+            component: kubernetes
+          annotations:
+            summary: "PVC {{ $labels.pvc_name }} CRITICAL capacity on {{ $labels.node_name }}"
+            description: |
+              PVC {{ $labels.pvc_name }} is {{ $value }}% full (threshold: 95%).
+              
+              IMMEDIATE ACTION: Expand storage or the pod may be evicted.
+
+        # ─────────────────────────────────────────────────────────────────────
+        # Availability Alerts
+        # ─────────────────────────────────────────────────────────────────────
+
+        - alert: OperatorNotReady
+          expr: stellar_operator_deployment_replicas_ready < 1
+          for: 2m
+          labels:
+            severity: critical
+            component: stellar-operator
+          annotations:
+            summary: "Operator has no ready replicas"
+            description: |
+              Operator deployment has {{ $value }} ready replicas.
+              
+              The operator is not available to reconcile resources.
+
+        - alert: OperatorReplicaMismatch
+          expr: |
+            stellar_operator_deployment_replicas != stellar_operator_deployment_replicas_ready
+          for: 5m
+          labels:
+            severity: warning
+            component: stellar-operator
+          annotations:
+            summary: "Operator replica count mismatch"
+            description: |
+              Desired replicas: {{ $value | query "stellar_operator_deployment_replicas" | first }}
+              Ready replicas: {{ $value | query "stellar_operator_deployment_replicas_ready" | first }}
+              
+              Some operator replicas are not ready.
+
+        - alert: ClusterHealthDegraded
+          expr: stellar:node_health_percent < 75
+          for: 5m
+          labels:
+            severity: warning
+            component: stellar-core
+          annotations:
+            summary: "Cluster health is degraded"
+            description: |
+              Only {{ $value }}% of nodes are healthy (threshold: 75%).
+              
+              Multiple nodes are experiencing issues.
+
+        - alert: ClusterHealthCritical
+          expr: stellar:node_health_percent < 50
+          for: 2m
+          labels:
+            severity: critical
+            component: stellar-core
+          annotations:
+            summary: "CRITICAL: Cluster health below 50%"
+            description: |
+              Only {{ $value }}% of nodes are healthy.
+              
+              The network may not be functioning properly.
+
+        # ─────────────────────────────────────────────────────────────────────
+        # Archive & Replication Alerts
+        # ─────────────────────────────────────────────────────────────────────
+
+        - alert: ArchiveLagHigh
+          expr: stellar:archive_lag:avg > 100
+          for: 10m
+          labels:
+            severity: warning
+            component: stellar-core
+          annotations:
+            summary: "Archive lag is high"
+            description: |
+              Average archive lag is {{ $value }} ledgers (threshold: 100).
+              
+              The archive may be falling behind in replication.
+
+        - alert: ArchiveLagCritical
+          expr: stellar:archive_lag:avg > 1000
+          for: 5m
+          labels:
+            severity: critical
+            component: stellar-core
+          annotations:
+            summary: "CRITICAL: Archive lag is critical"
+            description: |
+              Average archive lag is {{ $value }} ledgers.
+              
+              The archive is significantly behind. Data loss risk exists.
+
+        # ─────────────────────────────────────────────────────────────────────
+        # RPC Endpoint Alerts
+        # ─────────────────────────────────────────────────────────────────────
+
+        - alert: RPCEndpointUnavailable
+          expr: |
+            (rate(stellar_core_rpc_requests_total[5m]) == 0) and 
+            (stellar_core_node_up == 1)
+          for: 5m
+          labels:
+            severity: warning
+            component: stellar-core
+          annotations:
+            summary: "RPC endpoint unavailable on {{ $labels.node_name }}"
+            description: |
+              No RPC requests recorded for 5+ minutes despite node being up.
+              
+              Check RPC service health and network access.
+
+        - alert: RPCHighLatency
+          expr: |
+            histogram_quantile(0.95, rate(stellar_core_rpc_request_duration_seconds_bucket[5m])) > 5
+          for: 5m
+          labels:
+            severity: warning
+            component: stellar-core
+          annotations:
+            summary: "High RPC latency on {{ $labels.node_name }}"
+            description: |
+              RPC P95 latency is {{ $value }}s (threshold: 5s).
+              
+              RPC calls are responding slowly.
+
+        # ─────────────────────────────────────────────────────────────────────
+        # Soroban Smart Contract Alerts
+        # ─────────────────────────────────────────────────────────────────────
+
+        - alert: SorobanHighExecutionLatency
+          expr: |
+            histogram_quantile(0.95, rate(stellar_soroban_wasm_execution_seconds_bucket[5m])) > 1.0
+          for: 5m
+          labels:
+            severity: warning
+            component: soroban
+          annotations:
+            summary: "High Soroban WASM execution latency"
+            description: |
+              P95 WASM execution time is {{ $value }}s (threshold: 1.0s).
+              
+              Smart contract execution is slow.
+
+---
+# Alertmanager Configuration Example
+# (Deploy separately or as part of kube-prometheus-stack)
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alertmanager-config
+  namespace: stellar-system
+data:
+  alertmanager.yml: |
+    global:
+      resolve_timeout: 5m
+      slack_api_url: "{{ SLACK_WEBHOOK_URL }}"
+
+    route:
+      receiver: default
+      group_by: ['alertname', 'cluster', 'service']
+      group_wait: 10s
+      group_interval: 10s
+      repeat_interval: 12h
+
+      routes:
+        # Critical alerts → immediate Slack notification
+        - match:
+            severity: critical
+          receiver: critical
+          group_wait: 0s
+          group_interval: 1m
+
+        # Warning alerts → Slack with 5m wait
+        - match:
+            severity: warning
+          receiver: warning
+          group_wait: 5m
+          group_interval: 10m
+
+    receivers:
+      - name: default
+        slack_configs:
+          - channel: '#stellar-alerts'
+            title: 'Alert: {{ .GroupLabels.alertname }}'
+            text: '{{ range .Alerts }}{{ .Annotations.description }}{{ end }}'
+
+      - name: critical
+        slack_configs:
+          - channel: '#stellar-critical'
+            title: '🚨 CRITICAL: {{ .GroupLabels.alertname }}'
+            text: '{{ range .Alerts }}{{ .Annotations.description }}{{ end }}'
+        pagerduty_configs:
+          - routing_key: "{{ PAGERDUTY_KEY }}"
+
+      - name: warning
+        slack_configs:
+          - channel: '#stellar-warnings'
+            title: '⚠️ WARNING: {{ .GroupLabels.alertname }}'
+            text: '{{ range .Alerts }}{{ .Annotations.description }}{{ end }}'
